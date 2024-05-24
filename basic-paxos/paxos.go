@@ -1,9 +1,11 @@
 package basicpaxos
 
 import (
-  "sync"
-  "net"
-  "net/rpc"
+	"fmt"
+	"net"
+	"net/rpc"
+	"sync"
+	"time"
 )
 
 // PaxosNode represents servers in the cluster, each node can handle three aganes mentioned in the paper
@@ -71,13 +73,59 @@ func (pn *PaxosNode) acceptConn() {
   for {
     conn, err := pn.listener.Accept()
     if err != nil {
-      panic(err)
+      //panic(err) TODO: error handling
+      continue
     }
     go pn.server.ServeConn(conn)
   }
 }
 
 
+// The Prepare RPC that should be implemented, don't change the signatures 
+func (pn *PaxosNode) Prepare(args PrepareArgs, reply *PrepareReply) error {
+  
+}
+
+func (pn *PaxosNode) Accept(args AcceptArgs, reply *AcceptReply) error {
+
+}
+
+func (pn *PaxosNode) Learn(args LearnArgs, reply *LearnReply) error {
+
+}
+
+// Proposer
+func (pn *PaxosNode) Propose(value interface{}) {
+
+} 
+
+// Learner
+func (pn *PaxosNode) Learn() interface{} {
+
+  return nil
+}
+
+
+// simulate RPC call 
+func Call(addr string, rpcName string, args interface{}, reply interface{}) bool {
+  client, err := rpc.Dial("tcp", addr)
+  if err != nil {
+    fmt.Errorf("error: %e", err)
+    return false
+  }
+
+  defer client.Close()
+
+  // an async RPC call to avoid blocking
+  // the nil parameter causes an internal channel creation
+  call := client.Go(rpcName, args, reply, nil)
+  select {
+    case <- call.Done:
+      return call.Error == nil 
+    case <- time.After(1 * time.Second):
+      return false
+  }
+}
 
 
 
