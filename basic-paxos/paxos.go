@@ -17,10 +17,8 @@ type PaxosNode struct {
   server *rpc.Server
   listener net.Listener
 }
-
-// Proposal represents a proposal with a number and a value
-// we set Value of type interface because of flexibility,
-// for the assignment 1, you could set it as int
+// Proposal represents a proposal with a number and a value.
+// We set Value of type interface{} for flexibility, but for assignment 1, you could set it as int.
 type Proposal struct {
   Number int
   Value interface{} 
@@ -31,6 +29,7 @@ type PrepareArgs struct {
   ProposalNumber int
 }
 
+// PrepareReply defines the RPC reply for the Prepare phase.
 type PrepareReply struct {
 }
 
@@ -50,6 +49,7 @@ type LearnReply struct {
 
 }
 
+// NewPaxosNode creates and initializes a new PaxosNode.
 func NewPaxosNode(id int, peers []string, address string) *PaxosNode {
   node := &PaxosNode{
     id: id,
@@ -69,6 +69,7 @@ func NewPaxosNode(id int, peers []string, address string) *PaxosNode {
   return node
 }
 
+// acceptConn listens for incoming connections and serves them.
 func (pn *PaxosNode) acceptConn() {
   for {
     conn, err := pn.listener.Accept()
@@ -105,8 +106,10 @@ func (pn *PaxosNode) LearnValue() interface{} {
   return nil
 }
 
-
-// simulate RPC call 
+// Call simulates an RPC call to another Paxos node.
+// addr is the address of the remote node, rpcName is the name of the RPC method to call,
+// args are the arguments to pass to the RPC method 
+//and reply is where the reply from the RPC method will be stored.
 func Call(addr string, rpcName string, args interface{}, reply interface{}) bool {
   client, err := rpc.Dial("tcp", addr)
   if err != nil {
