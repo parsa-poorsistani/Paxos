@@ -100,7 +100,7 @@ func (pn *PaxosNode) Propose(value interface{}) {
 } 
 
 // Learner
-func (pn *PaxosNode) Learn() interface{} {
+func (pn *PaxosNode) LearnValue() interface{} {
 
   return nil
 }
