@@ -5,33 +5,28 @@
 package basicpaxos
 
 import (
+	"encoding/json"
 	"net"
 	"net/rpc"
+	"os"
 	"sync"
 	"time"
 )
-
-// This struct is for persisting the crucial values on Disk
-/*type PaxosNodeState struct {
-    MaxSeen int64 json:"max_seen"
-    AcceptedNum int64 json:"accepted_num"
-    AcceptedValue interface{} json:"accepted_value"
-}*/
-
 
 // PaxosNode represents servers in the cluster, each node can handle three aganes mentioned in the paper
 // Proposer, Acceptor and Learner
 // You must add the necessary fields to this struct, don't remove default fields.
 type PaxosNode struct {
-  mu sync.Mutex
-  id int
-  maxSeen int64 //used in proposal phase
-  acceptedNum int64 //not sure about this
-  acceptedValue interface{}
-  peers []string // other servers addr
-  server *rpc.Server
-  listener net.Listener
-  proposalSeq int64 // monotonically increasing seq number
+    mu sync.Mutex
+    id int
+    maxSeen int64 //used in proposal phase
+    acceptedNum int64 //not sure about this
+    acceptedValue interface{}
+    peers []string // other servers addr
+    server *rpc.Server
+    listener net.Listener
+    proposalSeq int64 // monotonically increasing seq number
+    stateFile string // Path to the file for durable storage
 }
 
 // Proposal represents a proposal with a number and a value.
@@ -73,12 +68,14 @@ type LearnReply struct {
 
 
 // NewPaxosNode creates and initializes a new PaxosNode.
-func NewPaxosNode(id int, peers []string, address string) *PaxosNode {
+func NewPaxosNode(id int, peers []string, address string, statePath string) *PaxosNode {
   node := &PaxosNode{
     id: id,
     peers: peers,
+    stateFile: statePath,
   }
-
+    
+  node.loadState()
   // the RPC server allows the node's methods to be called remotely.
   node.server = rpc.NewServer()
   node.server.Register(node)
@@ -106,6 +103,57 @@ func (pn *PaxosNode) acceptConn() {
     }
 }
 
+// loadState loads the acceptor state from a file.
+func(pn *PaxosNode) loadState() {
+    pn.mu.Lock()
+    defer pn.mu.Unlock()
+
+    if _, err := os.Stat(pn.stateFile); os.IsNotExist(err) {
+        return
+    }
+
+    data, err := os.ReadFile(pn.stateFile)
+    if err != nil {
+        panic(err)
+    }
+    
+    state := make(map[string]interface{})
+    if err := json.Unmarshal(data, &state); err != nil {
+        panic(err)
+    }
+
+    if val, ok := state["maxSeen"].(float64); ok {
+        pn.maxSeen = int64(val)
+    }
+    if val, ok := state["acceptedNum"].(float64); ok {
+        pn.acceptedNum = int64(val)
+    }
+    if val, ok := state["acceptedValue"]; ok {
+        pn.acceptedValue = val
+    }
+}
+
+// saveState saves the acceptor state to a file.
+func (pn *PaxosNode) saveState() {
+    pn.mu.Lock()
+    defer pn.mu.Unlock()
+
+    state := map[string]interface{}{
+        "maxSeen":       pn.maxSeen,
+        "acceptedNum":   pn.acceptedNum,
+        "acceptedValue": pn.acceptedValue,
+    }
+
+    data, err := json.Marshal(state)
+    if err != nil {
+        panic(err)
+    }
+
+    if err := os.WriteFile(pn.stateFile, data, 0644); err != nil {
+        panic(err)
+    }
+}
+
 
 // The Prepare RPC that should be implemented, don't change the signatures 
 func (pn *PaxosNode) Prepare(args PrepareArgs, reply *PrepareReply) error {
@@ -117,6 +165,7 @@ func (pn *PaxosNode) Prepare(args PrepareArgs, reply *PrepareReply) error {
         reply.Promise = true
         reply.AcceptedNum = pn.acceptedNum
         reply.AcceptedValue = pn.acceptedValue
+        pn.saveState()
     } else {
         reply.Promise = false
     }
@@ -133,6 +182,7 @@ func (pn *PaxosNode) Accept(args AcceptArgs, reply *AcceptReply) error {
         pn.acceptedNum = args.Proposal.Number
         pn.acceptedValue = args.Proposal.Value
         reply.Accepted = true
+        pn.saveState()
     } else {
         reply.Accepted = false
     }
@@ -195,9 +245,8 @@ func (pn *PaxosNode) Propose(value interface{}) {
             pn.mu.Lock()
             pn.acceptedNum = proposal.Number
             pn.acceptedValue = proposal.Value
+            pn.saveState()
             pn.mu.Unlock()
-
-
             // Value is chosed and must inform learners (if necessary)
             //learnArgs := LearnArgs{}
             //learReply := LearnReply{}
@@ -234,6 +283,7 @@ func(pn *PaxosNode) generateProposalNumber() int64 {
     proposalNumber := (pn.proposalSeq << 16) | int64(pn.id)
     return proposalNumber
 }
+
 // Call simulates an RPC call to another Paxos node.
 // addr is the address of the remote node, rpcName is the name of the RPC method to call,
 // args are the arguments to pass to the RPC method 
