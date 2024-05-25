@@ -1,7 +1,10 @@
+// basic-Paxos is designed for single variable consensus
+// for real world production level programs which needs to store multiple values
+// we should use multi-Paxos
+
 package basicpaxos
 
 import (
-	"fmt"
 	"net"
 	"net/rpc"
 	"sync"
@@ -93,14 +96,14 @@ func NewPaxosNode(id int, peers []string, address string) *PaxosNode {
 
 // acceptConn listens for incoming connections and serves them.
 func (pn *PaxosNode) acceptConn() {
-  for {
-    conn, err := pn.listener.Accept()
-    if err != nil {
-      //panic(err) TODO: error handling
-      continue
+    for {
+        conn, err := pn.listener.Accept()
+        if err != nil {
+            //panic(err) TODO: error handling
+            continue
+        }
+        go pn.server.ServeConn(conn)
     }
-    go pn.server.ServeConn(conn)
-  }
 }
 
 
@@ -238,7 +241,7 @@ func(pn *PaxosNode) generateProposalNumber() int64 {
 func Call(addr string, rpcName string, args interface{}, reply interface{}) bool {
   client, err := rpc.Dial("tcp", addr)
   if err != nil {
-    fmt.Errorf("error: %e", err)
+//    fmt.Errorf("error in : %e", err)
     return false
   }
 
