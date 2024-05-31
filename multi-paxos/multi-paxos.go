@@ -18,6 +18,7 @@ type PaxosInstance struct {
     maxSeen int64
     acceptedNum int64
     acceptedValue interface{}
+    isAccepted bool
 }
 
 type PaxosNode struct {
@@ -43,7 +44,7 @@ type Proposal struct {
 }
 
 type PrepareArgs struct {
-    Instance int
+    InstanceIdx int
     ProposalNumber int64
 }
 
@@ -239,15 +240,117 @@ func(pn *PaxosNode) startElection() {
         pn.leaderID = pn.id
         pn.mu.Unlock()
         go pn.sendHearbeats()
-        //go pn.preparePahse()
+        go pn.performInitialPrepare()
     }
 }
 
+
+
+// Not sure about this whole thing
+func(pn *PaxosNode) performInitialPrepare() {
+    pn.mu.Lock()
+    defer pn.mu.Unlock()
+
+    var wg sync.WaitGroup
+
+    for i:=0;i<len(pn.instances); i++ {
+        if instance, exists := pn.instances[i]; exists && instance.isAccepted {
+            continue
+        }
+        wg.Add(1)
+        go func(idx int) {
+            defer wg.Done()
+            
+            // Perform the Prepare phase for this instance
+
+            proposalNumber := pn.generateProposalNumber()
+            prepareArgs := PrepareArgs{
+                InstanceIdx: idx,
+                ProposalNumber: proposalNumber,
+            }
+            var prepareReply PrepareReply
+
+            promises := 1
+
+            var maxAcceptedNum int64 = -1
+            var maxAcceptedValue interface{}
+            var peerWg sync.WaitGroup
+
+            for _, peer := range pn.peers {
+                wg.Add(1)
+                go func(peer string) {
+                    defer peerWg.Done()
+                    if Call(peer, "PaxosNode.Prepare", prepareArgs, &prepareReply) && prepareReply.Promise {
+                        pn.mu.Lock()
+                        promises ++
+                        if prepareReply.AcceptedNum > maxAcceptedNum {
+                            maxAcceptedNum = prepareReply.AcceptedNum
+                            maxAcceptedValue = prepareReply.AcceptedValue
+                        }
+                        pn.mu.Unlock()
+                    }
+                }(peer)
+            }
+            peerWg.Wait()
+
+            if promises > len(pn.peers)/2 {
+                if maxAcceptedValue != nil {
+                    proposal := Proposal{
+                        Number: proposalNumber,
+                        Value: maxAcceptedValue,
+                    }
+                    acceptArgs := AcceptArgs{
+                        Proposal: proposal,
+                        Instance: idx, 
+                    }
+                    var acceptReply AcceptReply
+                    var peerWg sync.WaitGroup
+                    accepts := 1
+                    for _, peer := range pn.peers {
+                        wg.Add(1)
+                        go func(peer string) {
+                            defer peerWg.Done()
+                            if Call(peer, "PaxosNode.Accept", acceptArgs, &acceptReply) && acceptReply.Accepted {
+                                pn.mu.Lock()
+                                accepts++
+                                pn.mu.Unlock()
+                            }
+                        }(peer)
+                    }
+                    peerWg.Wait()
+
+                    if accepts > len(pn.peers)/2 {
+                        pn.mu.Lock()
+                        instance := &PaxosInstance {
+                            maxSeen: proposalNumber,
+                            acceptedNum: proposalNumber,
+                            acceptedValue: maxAcceptedValue,
+                            isAccepted: true,
+                        }
+                        pn.instances[idx] = instance
+                        pn.mu.Unlock()
+                        go pn.saveState()
+                    }
+                }
+            }
+        }(i)
+
+        wg.Wait()
+    }
+}
 func(pn *PaxosNode) AddCommand(args AddCommandArgs, reply *AddCommandReply) error {
+    pn.mu.Lock()
+    defer pn.mu.Unlock()
     if !pn.isLeader {
         // redirect to leader
+        fmt.Printf("Node %d, is not leader\n, redirecting to %d", pn.id,pn.leaderID)
     }
-
+    
+    for i := 0; i<len(pn.instances); i++ {
+        if _, exists := pn.instances[i]; !exists {
+            
+        }
+    }
     return nil
 } 
 func(pn *PaxosNode) sendHearbeats() {
@@ -275,14 +378,6 @@ func(pn *PaxosNode) sendHearbeats() {
     }
 }
 
-func (pn *PaxosNode) preparePhase() {
-    pn.mu.Lock()
-    defer pn.mu.Unlock()
-
-    for idx, instance := range pn.instances {
-
-    }
-}
 
 func(pn *PaxosNode) generateProposalNumber() int64 {
     pn.mu.Lock()
