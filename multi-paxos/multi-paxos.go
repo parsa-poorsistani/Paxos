@@ -15,6 +15,7 @@ import (
 // Each Paxos node maintains a map of PaxosInstance
 // It's the log of entry commands
 type PaxosInstance struct {
+    // not sure about maxSeen
     maxSeen int64
     acceptedNum int64
     acceptedValue interface{}
@@ -56,7 +57,7 @@ type PrepareReply struct {
 
 // RPC arguments and replies for Accept phase.
 type AcceptArgs struct {
-    Instance  int
+    InstanceIdx  int
     Proposal Proposal
 }
 
@@ -66,7 +67,7 @@ type AcceptReply struct {
 
 // RPC arguments and replies for Learn phase.
 type LearnArgs struct {
-    Instance int
+    InstanceIdx int
 }
 
 type LearnReply struct {
@@ -301,7 +302,7 @@ func(pn *PaxosNode) performInitialPrepare() {
                     }
                     acceptArgs := AcceptArgs{
                         Proposal: proposal,
-                        Instance: idx, 
+                        InstanceIdx: idx, 
                     }
                     var acceptReply AcceptReply
                     var peerWg sync.WaitGroup
@@ -338,6 +339,53 @@ func(pn *PaxosNode) performInitialPrepare() {
         wg.Wait()
     }
 }
+
+func(pn *PaxosNode) Accept(args AcceptArgs, reply *AcceptReply) error {
+    pn.mu.Lock()
+    defer pn.mu.Unlock()
+    
+    instance, exists := pn.instances[args.InstanceIdx]
+    if !exists {
+        instance = &PaxosInstance{}
+        pn.instances[args.InstanceIdx] = instance        
+    }
+
+    if args.Proposal.Number >= instance.maxSeen {
+        instance.maxSeen = args.Proposal.Number
+        instance.acceptedNum = args.Proposal.Number
+        instance.acceptedValue = args.Proposal.Value
+        reply.Accepted = true
+        go pn.saveState()
+    } else {
+        reply.Accepted = false
+    }
+    return nil
+}
+
+func(pn *PaxosNode) Prepare(args PrepareArgs, reply *PrepareReply) error {
+    pn.mu.Lock()
+    defer pn.mu.Unlock()
+
+    instance, exists := pn.instances[args.InstanceIdx]
+    if !exists {
+        instance = &PaxosInstance{}
+        pn.instances[args.InstanceIdx] = instance        
+    }
+
+    if args.ProposalNumber > instance.maxSeen {
+        instance.maxSeen = args.ProposalNumber
+        reply.Promise = true
+    } else {
+        reply.Promise = false
+    }
+    
+    // Always return the highest accepted proposal details
+    reply.AcceptedNum = instance.acceptedNum
+    reply.AcceptedValue = instance.acceptedValue
+    
+    go pn.saveState()
+    return nil
+}
 func(pn *PaxosNode) AddCommand(args AddCommandArgs, reply *AddCommandReply) error {
     pn.mu.Lock()
     defer pn.mu.Unlock()
@@ -359,7 +407,7 @@ func(pn *PaxosNode) AddCommand(args AddCommandArgs, reply *AddCommandReply) erro
             }
             
             acceptArgs := AcceptArgs {
-                Instance: i,
+                InstanceIdx: i,
                 Proposal: proposal,
             }
             var acceptReply AcceptReply
@@ -422,7 +470,7 @@ func(pn *PaxosNode) AddCommand(args AddCommandArgs, reply *AddCommandReply) erro
                 }
 
                 acceptArgs := AcceptArgs{
-                    Instance: i,
+                    InstanceIdx: i,
                     Proposal: proposal,
                 }
                 var acceptReply AcceptReply
@@ -472,7 +520,7 @@ func(pn *PaxosNode) AddCommand(args AddCommandArgs, reply *AddCommandReply) erro
         Value: args.Value,
     }
     acceptArgs := AcceptArgs{
-        Instance: commandNum,
+        InstanceIdx: commandNum,
         Proposal: proposal,
     }
     var acceptReply AcceptReply
@@ -492,14 +540,12 @@ func(pn *PaxosNode) AddCommand(args AddCommandArgs, reply *AddCommandReply) erro
     peerWg.Wait()
 
     if accepts > len(pn.peers)/2 {
-        pn.mu.Lock()
         pn.instances[commandNum] = &PaxosInstance{
             maxSeen: propsalNumer,
             acceptedNum: propsalNumer,
             acceptedValue: proposal.Value,
             isAccepted: true,
         }
-        pn.mu.Unlock()
         go pn.saveState()
         reply.CommandNum = commandNum
     } else {
@@ -562,10 +608,6 @@ func (pn *PaxosNode) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) 
 }
 
 
-func (pn *PaxosNode) Accept(args AcceptArgs, reply *AcceptReply) error {
-    return nil
-}
-
 func (pn *PaxosNode) Hearbeat(args HeartbeatArgs, reply *HeartbeatReply) error {
     pn.mu.Lock()
     defer pn.mu.Unlock()
@@ -579,6 +621,16 @@ func (pn *PaxosNode) Hearbeat(args HeartbeatArgs, reply *HeartbeatReply) error {
     return nil
 }
 
+func(pn *PaxosNode) ListCommands(args ListCommandsArgs, reply *ListCommandsReply) error {
+    commands := make(map[int]interface{})
+    for idx, instance := range pn.instances {
+        if instance.isAccepted {
+            commands[idx] = instance
+        }
+    }
+    reply.Commands = commands
+    return nil
+}
 
 func Call(addr, rpcMethod string, args interface{}, reply interface{}) bool {
     client, err := rpc.Dial("tcp",addr)
