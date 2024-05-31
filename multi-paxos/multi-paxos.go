@@ -346,13 +346,168 @@ func(pn *PaxosNode) AddCommand(args AddCommandArgs, reply *AddCommandReply) erro
         fmt.Printf("Node %d, is not leader\n, redirecting to %d", pn.id,pn.leaderID)
     }
     
-    for i := 0; i<len(pn.instances); i++ {
-        if _, exists := pn.instances[i]; !exists {
+    commandNum := len(pn.instances)
+    for i := 0; i<commandNum; i++ {
+        if instance, exists := pn.instances[i]; exists && instance.isAccepted{
+            continue
+        } else if exists && !instance.isAccepted {
+
+            // Accept this log entry first
+            proposal := Proposal{
+                Number: instance.acceptedNum,
+                Value: instance.acceptedValue,
+            }
             
+            acceptArgs := AcceptArgs {
+                Instance: i,
+                Proposal: proposal,
+            }
+            var acceptReply AcceptReply
+            accepts := 1
+            var peerWg sync.WaitGroup
+
+            for _, peer := range pn.peers {
+                peerWg.Add(1)
+                go func(peer string) {
+                    defer peerWg.Done()
+                    if Call(peer,"PaxosNode.Accept", acceptArgs, &acceptReply) && acceptReply.Accepted {
+                        pn.mu.Lock()
+                        accepts++
+                        pn.mu.Unlock()
+                    }
+                }(peer)
+            }
+            peerWg.Wait()
+
+            if accepts > len(pn.peers)/2 {
+                instance.isAccepted = true
+                go pn.saveState()
+            } else {
+                return fmt.Errorf("command not accepted by majority\n")
+            }
+        } else {
+            // Check with other nodes if they have an accepted value for this slot
+            prepareArgs := PrepareArgs {
+                ProposalNumber: pn.generateProposalNumber(),
+                InstanceIdx: i, 
+            }
+            var prepareReply PrepareReply
+            promises := 1
+            var maxAcceptedValue interface{}
+            var maxAcceptedNum int64 = -1
+            var peerWg sync.WaitGroup
+
+            for _, peer := range pn.peers {
+                peerWg.Add(1)
+                go func(peer string) {
+                    defer peerWg.Done()
+                    if Call(peer, "PaxosNode.Prepare", prepareArgs, &prepareReply) && prepareReply.Promise {
+                        pn.mu.Lock()
+                        promises++
+                        if prepareReply.AcceptedNum > maxAcceptedNum {
+                            maxAcceptedNum = prepareReply.AcceptedNum
+                            maxAcceptedValue = prepareReply.AcceptedValue
+                        }
+                        pn.mu.Unlock()
+                    }
+                }(peer)
+            }
+            peerWg.Wait()
+
+            if promises>len(pn.peers)/2 && maxAcceptedValue != nil {
+                // Accept the value for this slot that other nodes have chosen before
+                proposal := Proposal{
+                    Number: maxAcceptedNum,
+                    Value: maxAcceptedValue,
+                }
+
+                acceptArgs := AcceptArgs{
+                    Instance: i,
+                    Proposal: proposal,
+                }
+                var acceptReply AcceptReply
+                accepts := 1
+                var peerWg sync.WaitGroup
+
+                for _, peer := range pn.peers {
+                    peerWg.Add(1)
+                    go func(peer string){
+                        defer peerWg.Done()
+                        if Call(peer, "PaxosNode.Accept", acceptArgs, &acceptReply) && acceptReply.Accepted {
+                            pn.mu.Lock()
+                            accepts++
+                            pn.mu.Unlock()
+                        }
+                    }(peer)
+                }
+                peerWg.Wait()
+
+                if accepts>len(pn.peers)/2 {
+                    pn.instances[i] = &PaxosInstance{
+                        maxSeen: proposal.Number,
+                        acceptedNum: proposal.Number,
+                        acceptedValue: proposal.Value,
+                        isAccepted: true,
+                    }
+                    go pn.saveState()
+                } else {
+                    // need better error handling
+                    fmt.Errorf("didn't accepted by the majority for ")
+                }
+            } else {
+                // This is the first free slot and other 
+                // nodes didn't have anything in this slot
+                commandNum = i 
+                break
+            }
         }
+    }
+    // Propose New Command
+    accepts := 1
+    var peerWg sync.WaitGroup
+    
+    propsalNumer := pn.generateProposalNumber()
+    proposal := Proposal{
+        Number: propsalNumer,
+        Value: args.Value,
+    }
+    acceptArgs := AcceptArgs{
+        Instance: commandNum,
+        Proposal: proposal,
+    }
+    var acceptReply AcceptReply
+
+    for _, peer := range pn.peers {
+        peerWg.Add(1)
+        go func(peer string){
+            defer peerWg.Done()
+            if Call(peer, "PaxosNode.Accept", acceptArgs, &acceptReply) && acceptReply.Accepted {
+                pn.mu.Lock()
+                accepts++
+                pn.mu.Unlock()
+            }
+        }(peer)
+    }
+
+    peerWg.Wait()
+
+    if accepts > len(pn.peers)/2 {
+        pn.mu.Lock()
+        pn.instances[commandNum] = &PaxosInstance{
+            maxSeen: propsalNumer,
+            acceptedNum: propsalNumer,
+            acceptedValue: proposal.Value,
+            isAccepted: true,
+        }
+        pn.mu.Unlock()
+        go pn.saveState()
+        reply.CommandNum = commandNum
+    } else {
+        return fmt.Errorf("the new Command didn't accepted by the majority")
     }
     return nil
 } 
+
 func(pn *PaxosNode) sendHearbeats() {
     for {
         pn.mu.Lock()
