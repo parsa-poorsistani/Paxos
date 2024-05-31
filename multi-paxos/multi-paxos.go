@@ -24,6 +24,7 @@ type PaxosNode struct {
     mu sync.Mutex
     id int
     instances map[int]*PaxosInstance
+    proposalSeq int64
     peers []string
     server  *rpc.Server
     listener  net.Listener
@@ -41,7 +42,7 @@ type Proposal struct {
     Value interface{}
 }
 
-type PrepaerArgs struct {
+type PrepareArgs struct {
     Instance int
     ProposalNumber int64
 }
@@ -104,7 +105,7 @@ type HeartbeatArgs struct {
 type HeartbeatReply struct{}
 
 
-func NewPaxosNode(id int, peers []string, addr string, statePath string) *PaxosNode {
+func Make(id int, peers []string, addr string, statePath string) *PaxosNode {
     node := &PaxosNode{
         id: id,
         peers: peers,
@@ -222,7 +223,7 @@ func(pn *PaxosNode) startElection() {
                 CandidateID: pn.id,
             }
             var reply RequestVoteReply
-            if Call(peer, "PaxosNode.VoteRequest", args, &reply) && reply.VoteGranted {
+            if Call(peer, "PaxosNode.RequestVote", args, &reply) && reply.VoteGranted {
                 voteMu.Lock()
                 votes++
                 voteMu.Unlock()
@@ -238,15 +239,101 @@ func(pn *PaxosNode) startElection() {
         pn.leaderID = pn.id
         pn.mu.Unlock()
         go pn.sendHearbeats()
+        //go pn.preparePahse()
     }
 }
 
+func(pn *PaxosNode) AddCommand(args AddCommandArgs, reply *AddCommandReply) error {
+    if !pn.isLeader {
+        // redirect to leader
+    }
+
+    return nil
+} 
+func(pn *PaxosNode) sendHearbeats() {
+    for {
+        pn.mu.Lock()
+        if !pn.isLeader {
+            return
+        }
+        currentTerm := pn.currentTerm
+        pn.mu.Unlock()
+
+        args := HeartbeatArgs{Term: currentTerm, LeaderID: pn.leaderID}
+        reply := &HeartbeatReply{}
+        var wg sync.WaitGroup
+        for _, peer := range pn.peers {
+            wg.Add(1)
+            go func(peer string) {
+                defer wg.Done()
+                Call(peer, "PaxosNode.Heartbeat", args, reply)
+            }(peer)
+        }
+        wg.Wait()
+
+        time.Sleep(pn.hearbeatInterval)
+    }
+}
+
+func (pn *PaxosNode) preparePhase() {
+    pn.mu.Lock()
+    defer pn.mu.Unlock()
+
+    for idx, instance := range pn.instances {
+
+    }
+}
+
+func(pn *PaxosNode) generateProposalNumber() int64 {
+    pn.mu.Lock()
+    defer pn.mu.Unlock()
+    
+    pn.proposalSeq++
+    
+    // combine seq number with node ID to generate a unqiue proposalNumber
+    
+    proposalNumber := (pn.proposalSeq << 16) | int64(pn.id)
+    return proposalNumber
+}
+
+func (pn *PaxosNode) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error {
+    pn.mu.Lock()
+    defer pn.mu.Unlock()
+
+    if args.Term > pn.currentTerm {
+        pn.isLeader = false
+        pn.currentTerm = args.Term
+        reply.VoteGranted = true
+    } else {
+        reply.VoteGranted = false
+    }
+
+    return nil
+}
+
+
+func (pn *PaxosNode) Accept(args AcceptArgs, reply *AcceptReply) error {
+    return nil
+}
+
+func (pn *PaxosNode) Hearbeat(args HeartbeatArgs, reply *HeartbeatReply) error {
+    pn.mu.Lock()
+    defer pn.mu.Unlock()
+
+    if args.Term >= pn.currentTerm {
+        pn.leaderID = args.LeaderID
+        pn.currentTerm = args.Term
+        pn.isLeader = false
+        pn.heartbeatChan <- true
+    }
+    return nil
+}
 
 
 func Call(addr, rpcMethod string, args interface{}, reply interface{}) bool {
     client, err := rpc.Dial("tcp",addr)
     if err != nil {
-        fmt.Errorf("Error in Call method %e", err)
+        fmt.Printf("Error in Call method: %e", err)
         return false
     }
 
@@ -260,7 +347,6 @@ func Call(addr, rpcMethod string, args interface{}, reply interface{}) bool {
             fmt.Printf("timeout for RPC call with %s, for addr: %s",rpcMethod, addr)
             return false
     }
-
 }
 
 

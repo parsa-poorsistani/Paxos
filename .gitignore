@@ -1,2 +1,4 @@
 persistent-storage
+bpaxos
+mpaxos
 *.log

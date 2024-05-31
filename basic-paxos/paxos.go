@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// PaxosNode represents servers in the cluster, each node can handle three aganes mentioned in the paper
+// PaxosNode represents servers in the cluster, each node can handle three agantes mentioned in the paper
 // Proposer, Acceptor and Learner
 // You must add the necessary fields to this struct, don't remove default fields.
 type PaxosNode struct {
