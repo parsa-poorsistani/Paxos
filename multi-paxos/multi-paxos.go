@@ -118,9 +118,9 @@ func Make(id int, peers []string, addr string, statePath string) *PaxosNode {
         leaderID: -1,
         heartbeatChan: make(chan bool),
         hearbeatInterval: time.Duration(500 * time.Millisecond),
-        electionTimeout: time.Duration(1000 + rand.Intn(1501)) * time.Millisecond,
+        electionTimeout: time.Duration(1000 + rand.Intn(2001)) * time.Millisecond,
     }
-    
+    fmt.Printf("Node %d electionTimeoout: %d\n",node.id, node.electionTimeout)
     node.loadState()
     node.server = rpc.NewServer()
     node.server.Register(node)
@@ -193,6 +193,9 @@ func (pn *PaxosNode) saveState() {
 
 func(pn *PaxosNode) startElectionTimeout() {
     for {
+        if pn.isLeader {
+            continue
+        }
         select {
             case <- pn.heartbeatChan:
                 fmt.Printf("Node %d: received Heartbeat, resseting election timeout\n",pn.id)
@@ -207,6 +210,7 @@ func(pn *PaxosNode) startElectionTimeout() {
 }
 
 func(pn *PaxosNode) startElection() {
+    fmt.Printf("Node %d starting election\n", pn.id)
     pn.mu.Lock()
     pn.currentTerm++
     term := pn.currentTerm
@@ -218,6 +222,7 @@ func(pn *PaxosNode) startElection() {
     var voteWg sync.WaitGroup
     for _, peer := range pn.peers {
         voteWg.Add(1)
+        fmt.Printf("Node %d requesting vote from Node %s\n",pn.id, peer)
         go func(peer string) {
             defer voteWg.Done()
             args := RequestVoteArgs{
@@ -234,8 +239,8 @@ func(pn *PaxosNode) startElection() {
         }(peer)
     } 
     voteWg.Wait()
-
     if votes > len(pn.peers)/2 {
+        fmt.Printf("Node %d won the election(votes: %d) and is now leader\n", pn.id,votes)
         pn.mu.Lock()
         pn.isLeader = true
         pn.leaderID = pn.id
@@ -391,7 +396,7 @@ func(pn *PaxosNode) AddCommand(args AddCommandArgs, reply *AddCommandReply) erro
     defer pn.mu.Unlock()
     if !pn.isLeader {
         // redirect to leader
-        fmt.Printf("Node %d, is not leader\n, redirecting to %d", pn.id,pn.leaderID)
+        fmt.Printf("Node %d, is not leader, redirecting to %d\n", pn.id,pn.leaderID)
     }
     
     commandNum := len(pn.instances)
@@ -555,6 +560,7 @@ func(pn *PaxosNode) AddCommand(args AddCommandArgs, reply *AddCommandReply) erro
 } 
 
 func(pn *PaxosNode) sendHearbeats() {
+    fmt.Printf("Node %d is starting to send heartbeats and the leader is %d\n",pn.id,pn.leaderID)
     for {
         pn.mu.Lock()
         if !pn.isLeader {
@@ -564,13 +570,14 @@ func(pn *PaxosNode) sendHearbeats() {
         pn.mu.Unlock()
 
         args := HeartbeatArgs{Term: currentTerm, LeaderID: pn.leaderID}
-        reply := &HeartbeatReply{}
+        var reply HeartbeatReply
         var wg sync.WaitGroup
         for _, peer := range pn.peers {
+            fmt.Printf("Sending heartbeat from %d to %s\n",pn.id,peer)
             wg.Add(1)
             go func(peer string) {
                 defer wg.Done()
-                Call(peer, "PaxosNode.Heartbeat", args, reply)
+                Call(peer, "PaxosNode.Heartbeat", args, &reply)
             }(peer)
         }
         wg.Wait()
@@ -596,6 +603,7 @@ func (pn *PaxosNode) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) 
     pn.mu.Lock()
     defer pn.mu.Unlock()
 
+    fmt.Printf("Node %d requested vote from %d in term: %d\n",args.CandidateID,pn.id,args.Term)
     if args.Term > pn.currentTerm {
         pn.isLeader = false
         pn.currentTerm = args.Term
@@ -608,10 +616,11 @@ func (pn *PaxosNode) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) 
 }
 
 
-func (pn *PaxosNode) Hearbeat(args HeartbeatArgs, reply *HeartbeatReply) error {
+func(pn *PaxosNode) Heartbeat(args HeartbeatArgs, reply *HeartbeatReply) error {
     pn.mu.Lock()
     defer pn.mu.Unlock()
 
+    fmt.Printf("Heartbeat RPC received by node %d, from Node %d in term: %d\n",pn.id,args.LeaderID,args.Term)
     if args.Term >= pn.currentTerm {
         pn.leaderID = args.LeaderID
         pn.currentTerm = args.Term
@@ -643,13 +652,14 @@ func Call(addr, rpcMethod string, args interface{}, reply interface{}) bool {
     call := client.Go(rpcMethod, args, reply, nil)
     
     select {
-        case <- call.Done:
+    case callDone := <- call.Done:
+            if callDone.Error != nil {
+                fmt.Printf("Call method error: %v\n", callDone.Error)
+            }
             return call.Error == nil
         case <- time.After(1 * time.Second):
-            fmt.Printf("timeout for RPC call with %s, for addr: %s",rpcMethod, addr)
+            fmt.Printf("timeout for RPC call with %s, for addr: %s\n",rpcMethod, addr)
             return false
     }
 }
-
-
 
